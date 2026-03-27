@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>همة تك - تقارير الفحص</title>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;font-family:'Tajawal',sans-serif;-webkit-tap-highlight-color:transparent;}
+body{margin:0;background:#f9fafb;direction:rtl;color:#131A23;}
+input,textarea,select{font-family:'Tajawal',sans-serif;}
+input[type=number]::-webkit-inner-spin-button{display:none;}
+.si{background:transparent;outline:none;border:none;border-bottom:1px solid transparent;width:100%;padding:3px 0;color:#131A23;font-size:14px;transition:border-color .2s;}
+.si:focus{border-bottom-color:#DD4726;}
+button{cursor:pointer;font-family:'Tajawal',sans-serif;}
+.card{background:white;border-radius:14px;box-shadow:0 1px 6px rgba(0,0,0,.07);border:1px solid #f3f4f6;}
+.btn{border:none;border-radius:10px;font-weight:700;cursor:pointer;font-family:'Tajawal',sans-serif;display:inline-flex;align-items:center;gap:5px;padding:7px 13px;font-size:12px;}
+.toolbar{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.96);backdrop-filter:blur(8px);border-bottom:1px solid #e5e7eb;padding:8px 12px;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;}
+@media print{
+  body{background:white!important;}
+  .no-print{display:none!important;}
+  .print-only{display:block!important;}
+  #report-card{box-shadow:none!important;border:none!important;border-radius:0!important;margin:0!important;padding:8mm!important;max-width:100%!important;}
+  select{-webkit-appearance:none;appearance:none;border:none!important;background:transparent!important;padding:0!important;}
+  input{border:none!important;background:transparent!important;}
+  textarea{display:none!important;}
+  .print-only{display:block!important;font-size:13px;line-height:1.7;padding:12px;white-space:pre-wrap;color:#131A23;}
+  table{width:100%!important;border-collapse:collapse!important;}
+  th,td{border:1px solid #d1d5db!important;padding:5px!important;font-size:11px!important;}
+  @page{size:A4;margin:8mm;}
+  *{print-color-adjust:exact!important;-webkit-print-color-adjust:exact!important;}
+}
+.print-only{display:none;}
+</style>
+</head>
+<body>
+<div id="app">
+  <div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:16px;">
+    <div style="font-size:40px">⏳</div>
+    <div style="font-weight:700;font-size:18px;color:#374151;">جاري التحميل...</div>
+  </div>
+</div>
+<script>
+const THEME="#DD4726", TC="#131A23";
+const PID="hematech-report";
+const FS=`https://firestore.googleapis.com/v1/projects/${PID}/databases/(default)/documents`;
+const COL_R="hemah_reports", COL_P="hemah_photos", COL_L="hemah_logos";
+
+/* ── Firestore REST ── */
+async function fsSet(col,id,data){
+  const body={fields:{}};
+  function toV(v){
+    if(v===null||v===undefined)return{nullValue:null};
+    if(typeof v==="boolean")return{booleanValue:v};
+    if(typeof v==="number")return Number.isInteger(v)?{integerValue:String(v)}:{doubleValue:v};
+    if(typeof v==="string")return{stringValue:v};
+    if(Array.isArray(v))return{arrayValue:{values:v.map(toV)}};
+    if(typeof v==="object")return{mapValue:{fields:toF(v)}};
+    return{stringValue:String(v)};
+  }
+  function toF(o){return Object.fromEntries(Object.entries(o).map(([k,v])=>[k,toV(v)]));}
+  const clean={...data};delete clean._id;
+  body.fields=toF(clean);
+  const r=await fetch(`${FS}/${col}/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  if(!r.ok){const e=await r.json();throw new Error(e.error?.message||`HTTP ${r.status}`);}
+}
+async function fsGet(col,id){
+  const r=await fetch(`${FS}/${col}/${id}`);
+  if(r.status===404)return null;
+  if(!r.ok)return null;
+  const d=await r.json();
+  return fromDoc(d);
+}
+async function fsList(col){
+  const r=await fetch(`${FS}/${col}?pageSize=200`);
+  if(!r.ok)return[];
+  const d=await r.json();
+  return(d.documents||[]).map(fromDoc);
+}
+async function fsDel(col,id){
+  await fetch(`${FS}/${col}/${id}`,{method:"DELETE"});
+}
+function fromDoc(d){
+  function fromV(v){
+    if(!v)return null;
+    if("nullValue"in v)return null;
+    if("booleanValue"in v)return v.booleanValue;
+    if("integerValue"in v)return parseInt(v.integerValue,10);
+    if("doubleValue"in v)return v.doubleValue;
+    if("stringValue"in v)return v.stringValue;
+    if("arrayValue"in v)return(v.arrayValue.values||[]).map(fromV);
+    if("mapValue"in v)return fromF(v.mapValue.fields||{});
+    return null;
+  }
+  function fromF(f){return Object.fromEntries(Object.entries(f).map(([k,v])=>[k,fromV(v)]));}
+  return{...fromF(d.fields||{}),_id:d.name?.split("/").pop()};
+}
+
+/* ── Helpers ── */
+const uid=()=>Math.random().toString(36).slice(2,11);
+function riyadhNow(){
+  try{
+    const f=new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Riyadh",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
+    const p={};f.formatToParts(new Date()).forEach(({type,value})=>{p[type]=value;});
+    return{date:`${p.year}-${p.month}-${p.day}`,reportId:`HT-${p.year}${p.month}${p.day}-${p.hour}${p.minute}`};
+  }catch(e){const n=new Date();return{date:n.toISOString().split("T")[0],reportId:`HT-${Date.now().toString().slice(-8)}`};}
+}
+function compress(src,mx,q){
+  mx=mx||500;q=q||0.4;
+  return new Promise(function(res){
+    const img=new Image();img.src=src;
+    img.onload=function(){
+      let w=img.width,h=img.height;
+      if(w>mx){h=Math.round(h*mx/w);w=mx;}
+      const c=document.createElement("canvas");c.width=w;c.height=h;
+      c.getContext("2d").drawImage(img,0,0,w,h);
+      res(c.toDataURL("image/jpeg",q));
+    };
+    img.onerror=function(){res(src);};
+  });
+}
+const LS={
+  get:function(k){try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch(e){return null;}},
+  set:function(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+};
+
+/* ── Blank State ── */
+function blank(){
+  const t=riyadhNow();
+  return{
+    companyAr:"همة تك للصيانة",companyEn:"HEME TECH MAINTENANCE",
+    reportTitleAr:"تقرير فحص فني شامل",reportTitleEn:"Technical Inspection Report",
+    lblCustomer:"اسم العميل:",lblReportId:"رقم التقرير:",lblDate:"تاريخ الفحص:",lblAddress:"العنوان:",
+    colIssue:"المشكلة / Issue",colStatus:"الحالة / Status",colDetails:"التفاصيل / Details",
+    sparePartsTitle:"قطع الغيار | Spare Parts",colItem:"الصنف / Item",colType:"النوع / Type",
+    colQty:"الكمية",colPrice:"السعر (ر.س)",colTotal:"الإجمالي (ر.س)",
+    lblGrandTotal:"الإجمالي الكلي التقديري (ر.س):",currency:"ر.س",
+    assessmentTitle:"التقييم العام | Assessment",recommendationsTitle:"التوصيات | Recommendations",
+    visualsTitle:"التوثيق الصوري | Visuals",
+    disclaimer:"إخلاء مسؤولية: هذا التقرير يوثق الحالة الظاهرية للعقار وقت الفحص ولا يعد ضماناً ضد العيوب الخفية.",
+    showPrices:false,customerName:"",address:"",
+    reportId:t.reportId,date:t.date,
+    logo1:LS.get("default_logo1")||null,
+    logo2:LS.get("default_logo2")||null,
+    sections:[
+      {id:uid(),titleAr:"مشاكل الكهرباء",titleEn:"Electrical Issues",items:[{id:uid(),itemAr:"التمديدات والقواطع",itemEn:"",status:"",notes:""}]},
+      {id:uid(),titleAr:"مشاكل السباكة",titleEn:"Plumbing Issues",items:[{id:uid(),itemAr:"المحابس والخلاطات",itemEn:"",status:"",notes:""}]},
+    ],
+    materials:[{id:uid(),name:"",qty:"1",type:"",price:"0"}],
+    generalAssessment:"",recommendations:"",photos:[],
+  };
+}
+
+/* ── App State ── */
+var S=blank();
+var reports=[];
+var view="dashboard";
+var saving=false;
+var loading=true;
+var conn="loading";
+var alertD={show:false,msg:"",type:"info",cb:null};
+
+function showAlert(msg){alertD={show:true,msg:msg,type:"info",cb:null};render();}
+function showConfirm(msg,cb){alertD={show:true,msg:msg,type:"confirm",cb:cb};render();}
+function closeAlert(){alertD={show:false,msg:"",type:"info",cb:null};render();}
+
+/* ── Firebase Ops ── */
+async function loadReports(silent){
+  if(!silent){loading=true;render();}
+  try{
+    const docs=await fsList(COL_R);
+    docs.sort(function(a,b){return(b.updatedAt||0)-(a.updatedAt||0);});
+    reports=docs;conn="ok";
+    // حمّل الشعارات من Firebase إن لم تكن محلية
+    if(!LS.get("default_logo1")){
+      try{
+        const ld=await fsGet(COL_L,"default");
+        if(ld&&ld.logo1){LS.set("default_logo1",ld.logo1);LS.set("default_logo2",ld.logo2||null);}
+      }catch(e){}
+    }
+  }catch(e){
+    conn="error";
+    if(!silent)showAlert("فشل الاتصال بـ Firebase:\n"+e.message+"\n\nتأكد من:\n1- رفع الملف على GitHub Pages\n2- تفعيل Firestore Test Mode");
+  }
+  loading=false;render();
+}
+
+async function handleSave(){
+  saving=true;render();
+  try{
+    const now=Date.now();
+    // حفظ الشعارات في Firebase
+    if(S.logo1||S.logo2){
+      try{
+        await fsSet(COL_L,"default",{logo1:S.logo1||null,logo2:S.logo2||null,updatedAt:now});
+        if(S.logo1)LS.set("default_logo1",S.logo1);
+        if(S.logo2)LS.set("default_logo2",S.logo2);
+      }catch(e){}
+    }
+    // حفظ التقرير بدون شعارات
+    const meta=Object.assign({},S,{photos:[],logo1:null,logo2:null,updatedAt:now,savedAt:S.savedAt||now});
+    await fsSet(COL_R,S.reportId,meta);
+    // حفظ الصور منفصلة
+    const photos=[];
+    for(var i=0;i<(S.photos||[]).length;i++){
+      try{photos.push(Object.assign({},S.photos[i],{url:await compress(S.photos[i].url,350,0.25)}));}
+      catch(e){photos.push(S.photos[i]);}
+    }
+    try{await fsSet(COL_P,S.reportId,{photos:photos,updatedAt:now});}catch(e){}
+    await loadReports(true);
+    showAlert("✅ تم الحفظ بنجاح");
+  }catch(e){showAlert("فشل الحفظ: "+e.message);}
+  saving=false;render();
+}
+
+async function openReport(r){
+  var full=Object.assign({},r);
+  try{var pd=await fsGet(COL_P,r.reportId||r._id);if(pd&&pd.photos)full.photos=pd.photos;}catch(e){}
+  var l1=LS.get("default_logo1");
+  var l2=LS.get("default_logo2");
+  full.logo1=full.logo1||l1||null;
+  full.logo2=full.logo2||l2||null;
+  S=Object.assign(blank(),full,{photos:full.photos||[],logo1:full.logo1,logo2:full.logo2});
+  view="editor";render();
+}
+
+function deleteReport(id){
+  showConfirm("حذف التقرير نهائياً؟",async function(){
+    try{
+      await fsDel(COL_R,id);
+      try{await fsDel(COL_P,id);}catch(e){}
+      reports=reports.filter(function(r){return(r.reportId||r._id)!==id;});render();
+    }catch(e){showAlert("فشل: "+e.message);}
+  });
+}
+
+function exportJSON(d){
+  d=d||S;
+  var a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(d,null,2)],{type:"application/json"}));
+  a.download="HemahTech_"+d.reportId+".json";
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+}
+
+/* ── DOM Builder ── */
+function el(tag,props,children){
+  props=props||{};
+  // normalize children: string, node, or array
+  if(children==null) children=[];
+  else if(!Array.isArray(children)) children=[children];
+  var e=document.createElement(tag);
+  Object.keys(props).forEach(function(k){
+    var v=props[k];
+    if(k==="style"&&typeof v==="object"){Object.assign(e.style,v);}
+    else if(k==="className"){e.className=v;}
+    else if(k==="onclick"||k==="onchange"||k==="oninput"){e.addEventListener(k.slice(2),v);}
+    else if(k in e){try{e[k]=v;}catch(ex){e.setAttribute(k,v);}}
+    else{e.setAttribute(k,v);}
+  });
+  children.forEach(function(c){
+    if(c==null||c===false||c===undefined)return;
+    if(Array.isArray(c)){c.forEach(function(x){if(x!=null)e.appendChild(typeof x==="string"?document.createTextNode(x):x);});}
+    else{e.appendChild(typeof c==="string"?document.createTextNode(c):c);}
+  });
+  return e;
+}
+function siEl(val,onChange,opts){
+  opts=opts||{};
+  var inp=el("input",{type:opts.type||"text",className:"si",placeholder:opts.ph||""});
+  inp.value=val||"";
+  if(opts.style)Object.assign(inp.style,opts.style);
+  inp.addEventListener("input",function(e){onChange(e.target.value);});
+  inp.addEventListener("change",function(e){onChange(e.target.value);});
+  return inp;
+}
+function btn(label,onClick,bg,color){
+  bg=bg||"#f3f4f6";color=color||"#374151";
+  var b=el("button",{className:"btn",style:{background:bg,color:color},onclick:onClick},[label]);
+  return b;
+}
+
+/* ── Render ── */
+function render(){
+  var app=document.getElementById("app");
+  if(!app)return;
+  app.innerHTML="";
+  if(view==="dashboard")app.appendChild(renderDashboard());
+  else app.appendChild(renderEditor());
+  if(alertD.show)app.appendChild(renderAlert());
+}
+
+function renderAlert(){
+  var bg=el("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9999,padding:"16px"}});
+  var box=el("div",{style:{background:"white",borderRadius:"20px",padding:"24px",maxWidth:"340px",width:"100%",textAlign:"center",borderTop:"4px solid "+THEME}});
+  box.appendChild(el("div",{style:{fontSize:"40px",marginBottom:"12px"}},alertD.type==="info"?["✅"]:["⚠️"]));
+  var msg=el("div",{style:{fontWeight:700,fontSize:"15px",marginBottom:"20px",whiteSpace:"pre-line"}});
+  msg.textContent=alertD.msg;box.appendChild(msg);
+  var row=el("div",{style:{display:"flex",justifyContent:"center",gap:"10px"}});
+  if(alertD.type==="confirm"){
+    row.appendChild(btn("نعم",function(){if(alertD.cb)alertD.cb();closeAlert();},THEME,"white"));
+  }
+  row.appendChild(btn(alertD.type==="confirm"?"إلغاء":"حسناً",closeAlert));
+  box.appendChild(row);bg.appendChild(box);return bg;
+}
+
+/* ── DASHBOARD ── */
+function renderDashboard(){
+  var wrap=el("div",{style:{minHeight:"100vh",paddingBottom:"60px"}});
+  var connBg=conn==="ok"?"#dcfce7":conn==="error"?"#fee2e2":"#fef9c3";
+  var connClr=conn==="ok"?"#15803d":conn==="error"?"#dc2626":"#92400e";
+  var connTxt=conn==="ok"?"☁️ متصل":conn==="error"?"⚠️ خطأ":"⏳";
+
+  var hdr=el("div",{className:"card no-print",style:{margin:"12px",padding:"14px",display:"flex",flexWrap:"wrap",justifyContent:"space-between",alignItems:"center",gap:"10px"}});
+  hdr.appendChild(el("div",{style:{display:"flex",alignItems:"center",gap:"8px"}},[
+    el("span",{style:{fontSize:"20px",fontWeight:900}},"الصفحة الرئيسية"),
+    el("span",{style:{fontSize:"11px",padding:"3px 10px",borderRadius:"20px",fontWeight:700,background:connBg,color:connClr}},connTxt),
+  ]));
+  var acts=el("div",{style:{display:"flex",gap:"6px",flexWrap:"wrap"}});
+  acts.appendChild(btn("🔄 تحديث",async function(){conn="loading";render();await loadReports();}));
+
+  var impLbl=el("label",{className:"btn",style:{background:"#f3f4f6",color:"#374151",cursor:"pointer"}});
+  impLbl.textContent="📂 استعادة JSON";
+  var impInp=el("input",{type:"file",accept:".json"});
+  impInp.style.display="none";
+  impInp.addEventListener("change",function(e){
+    var f=e.target.files[0];if(!f)return;
+    var r=new FileReader();
+    r.onload=function(ev){try{S=Object.assign(blank(),JSON.parse(ev.target.result));view="editor";render();}catch(err){showAlert("ملف غير صالح.");}};
+    r.readAsText(f);e.target.value="";
+  });
+  impLbl.appendChild(impInp);acts.appendChild(impLbl);
+
+  acts.appendChild(btn("+ تقرير جديد",function(){S=blank();view="editor";render();},THEME,"white"));
+  hdr.appendChild(acts);wrap.appendChild(hdr);
+
+  if(conn==="error"){
+    var errDiv=el("div",{style:{margin:"0 12px 12px",padding:"12px",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:"12px",fontSize:"13px",color:"#dc2626",lineHeight:1.7}});
+    errDiv.textContent="❌ تعذّر الاتصال بـ Firebase — تأكد من رفع الملف على GitHub Pages وتفعيل Firestore Test Mode";
+    wrap.appendChild(errDiv);
+  }
+
+  var body=el("div",{style:{padding:"0 12px"}});
+  if(loading){
+    body.appendChild(el("div",{style:{textAlign:"center",padding:"60px 0",color:"#9ca3af"}},[
+      el("div",{style:{fontSize:"36px"}},"⏳"),
+      el("div",{style:{fontWeight:700,marginTop:"10px"}},"جاري التحميل..."),
+    ]));
+  } else if(reports.length===0){
+    body.appendChild(el("div",{className:"card",style:{padding:"50px",textAlign:"center"}},[
+      el("div",{style:{fontSize:"44px",marginBottom:"8px"}},"📂"),
+      el("div",{style:{fontWeight:700,fontSize:"17px"}},"لا توجد تقارير بعد"),
+      el("div",{style:{fontSize:"13px",color:"#9ca3af",marginTop:"6px"}},"أنشئ تقريرك الأول"),
+    ]));
+  } else {
+    var grid=el("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:"12px"}});
+    reports.forEach(function(r){
+      var rid=r.reportId||r._id;
+      var c=el("div",{className:"card",style:{padding:"14px"}});
+      var top=el("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:"8px"}});
+      var badge=el("span",{style:{background:"#fff7ed",color:THEME,padding:"3px 10px",borderRadius:"8px",fontSize:"11px",fontWeight:900,direction:"ltr"}});
+      badge.textContent=rid;top.appendChild(badge);
+      var actions=el("div");
+      var dlBtn=el("button",{style:{background:"none",border:"none",cursor:"pointer",color:"#9ca3af",fontSize:"16px",padding:"4px"}});
+      dlBtn.textContent="⬇";dlBtn.onclick=function(){exportJSON(r);};
+      var delBtn=el("button",{style:{background:"none",border:"none",cursor:"pointer",color:"#9ca3af",fontSize:"16px",padding:"4px"}});
+      delBtn.textContent="🗑";delBtn.onclick=function(){deleteReport(rid);};
+      actions.appendChild(dlBtn);actions.appendChild(delBtn);top.appendChild(actions);c.appendChild(top);
+      var name=el("div",{style:{fontWeight:700,fontSize:"14px",marginBottom:"8px",overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}});
+      name.textContent=r.customerName||"بدون اسم عميل";c.appendChild(name);
+      var date=el("div",{style:{fontSize:"12px",color:"#6b7280",marginBottom:"3px"}});
+      date.textContent="📅 "+(r.date||"");c.appendChild(date);
+      var addr=el("div",{style:{fontSize:"12px",color:"#6b7280",marginBottom:"12px"}});
+      addr.textContent="📍 "+(r.address||"بدون عنوان");c.appendChild(addr);
+      var ob=el("button",{style:{width:"100%",padding:"9px",background:"#f9fafb",border:"none",borderRadius:"10px",fontWeight:700,fontSize:"13px",cursor:"pointer"}});
+      ob.textContent="فتح التقرير ←";
+      ob.onmouseenter=function(){ob.style.background=THEME;ob.style.color="white";};
+      ob.onmouseleave=function(){ob.style.background="#f9fafb";ob.style.color=TC;};
+      ob.onclick=function(){openReport(r);};
+      c.appendChild(ob);grid.appendChild(c);
+    });
+    body.appendChild(grid);
+  }
+  wrap.appendChild(body);return wrap;
+}
+
+/* ── EDITOR ── */
+function renderEditor(){
+  var wrap=el("div",{style:{minHeight:"100vh",paddingBottom:"40px"}});
+
+  /* Toolbar */
+  var tb=el("div",{className:"toolbar no-print"});
+  tb.appendChild(btn("→ الرئيسية",function(){view="dashboard";render();}));
+  var right=el("div",{style:{display:"flex",flexWrap:"wrap",gap:"6px"}});
+  right.appendChild(btn("⬇ JSON",function(){exportJSON();},"#1f2937","white"));
+
+  var impL=el("label",{className:"btn",style:{background:"#f3f4f6",color:"#374151",cursor:"pointer"}});
+  impL.textContent="📂 استعادة";
+  var impI=el("input",{type:"file",accept:".json"});impI.style.display="none";
+  impI.addEventListener("change",function(e){
+    var f=e.target.files[0];if(!f)return;
+    var r=new FileReader();
+    r.onload=function(ev){try{S=Object.assign(blank(),JSON.parse(ev.target.result));render();}catch(err){showAlert("ملف غير صالح.");}};
+    r.readAsText(f);e.target.value="";
+  });
+  impL.appendChild(impI);right.appendChild(impL);
+
+  var saveB=btn(saving?"⏳ جاري...":"☁️ حفظ",async function(){if(!saving)await handleSave();},"#2563eb","white");
+  right.appendChild(saveB);
+  right.appendChild(btn("🖨️ طباعة",function(){window.print();},"#16a34a","white"));
+  var priceB=btn(S.showPrices?"إخفاء الأسعار":"تفعيل الأسعار",function(){S.showPrices=!S.showPrices;render();},S.showPrices?THEME:"#fff7ed",S.showPrices?"white":THEME);
+  right.appendChild(priceB);
+  tb.appendChild(right);wrap.appendChild(tb);
+
+  /* Report Card */
+  var card=el("div",{id:"report-card",style:{maxWidth:"800px",margin:"12px auto",background:"white",borderRadius:"14px",padding:"16px",boxShadow:"0 4px 20px rgba(0,0,0,.08)"}});
+
+  /* ── Header ── */
+  var hdr=el("div",{style:{display:"flex",alignItems:"center",gap:"10px",paddingBottom:"14px",marginBottom:"18px",borderBottom:"4px solid "+THEME}});
+
+  function makeLogoLabel(field){
+    var lbl=el("label",{style:{flexShrink:0,width:"64px",height:"64px",border:"2px dashed #e5e7eb",borderRadius:"10px",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",overflow:"hidden",background:"#fafafa"}});
+    if(S[field]){
+      lbl.appendChild(el("img",{src:S[field],style:{width:"100%",height:"100%",objectFit:"contain",padding:"2px"}}));
+    } else {
+      lbl.appendChild(document.createTextNode("📷"));
+    }
+    var inp=el("input",{type:"file",accept:"image/*"});inp.style.display="none";
+    inp.addEventListener("change",async function(e){
+      var f=e.target.files[0];if(!f)return;
+      var r=new FileReader();
+      r.onload=async function(ev){
+        var c=await compress(ev.target.result,400,0.7);
+        S[field]=c;LS.set("default_"+field,c);render();
+      };
+      r.readAsDataURL(f);
+    });
+    lbl.appendChild(inp);return lbl;
+  }
+
+  hdr.appendChild(makeLogoLabel("logo1"));
+  var ctr=el("div",{style:{flex:1,textAlign:"center",overflow:"hidden",minWidth:0}});
+  ctr.appendChild(siEl(S.companyAr,function(v){S.companyAr=v;},{style:{fontWeight:900,fontSize:"17px",textAlign:"center",display:"block"}}));
+  ctr.appendChild(siEl(S.companyEn,function(v){S.companyEn=v;},{style:{fontSize:"11px",textAlign:"center",opacity:.5,display:"block",textTransform:"uppercase"}}));
+  ctr.appendChild(el("div",{style:{height:"1px",background:"#333",opacity:.2,margin:"5px 0"}}));
+  ctr.appendChild(siEl(S.reportTitleAr,function(v){S.reportTitleAr=v;},{style:{fontWeight:700,fontSize:"14px",textAlign:"center",display:"block"}}));
+  ctr.appendChild(siEl(S.reportTitleEn,function(v){S.reportTitleEn=v;},{style:{fontSize:"11px",textAlign:"center",display:"block"}}));
+  hdr.appendChild(ctr);
+  hdr.appendChild(makeLogoLabel("logo2"));
+  card.appendChild(hdr);
+
+  /* ── Customer Info ── */
+  var infoGrid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",border:"2px solid "+TC,padding:"14px",borderRadius:"12px",marginBottom:"18px",background:"#fafafa"}});
+  var infoFields=[["lblCustomer","customerName","text",false],["lblReportId","reportId","text",true],["lblDate","date","date",false],["lblAddress","address","text",false]];
+  infoFields.forEach(function(f){
+    var l=f[0],v=f[1],tp=f[2],ltr=f[3];
+    var d=el("div",{style:{borderBottom:"1px solid #e5e7eb",paddingBottom:"8px"}});
+    d.appendChild(siEl(S[l],function(val){S[l]=val;},{style:{fontSize:"11px",fontWeight:700,color:THEME,display:"block"}}));
+    d.appendChild(siEl(S[v],function(val){S[v]=val;},{type:tp,ph:"...",style:{fontSize:"14px",fontWeight:700,direction:ltr?"ltr":"rtl"}}));
+    infoGrid.appendChild(d);
+  });
+  card.appendChild(infoGrid);
+
+  /* ── Sections ── */
+  S.sections.forEach(function(sec){
+    var secDiv=el("div",{style:{marginBottom:"14px",border:"1px solid #e5e7eb",borderRadius:"12px",overflow:"hidden"}});
+    var secHdr=el("div",{style:{padding:"9px 12px",background:"#f9fafb",borderBottom:"2px solid "+THEME,display:"flex",justifyContent:"space-between",alignItems:"center"}});
+    var secTxt=el("div",{style:{flex:1}});
+    secTxt.appendChild(siEl(sec.titleAr,function(v){sec.titleAr=v;},{style:{fontWeight:700,fontSize:"15px"}}));
+    secTxt.appendChild(siEl(sec.titleEn,function(v){sec.titleEn=v;},{style:{fontSize:"11px",opacity:.4,direction:"ltr"}}));
+    secHdr.appendChild(secTxt);
+    var delSecBtn=el("button",{className:"no-print",style:{background:"none",border:"none",cursor:"pointer",color:"#f87171",fontSize:"18px",padding:"2px 8px"}});
+    delSecBtn.textContent="🗑";
+    delSecBtn.onclick=function(){S.sections=S.sections.filter(function(x){return x.id!==sec.id;});render();};
+    secHdr.appendChild(delSecBtn);secDiv.appendChild(secHdr);
+
+    var tbl=el("table",{style:{width:"100%",borderCollapse:"collapse",tableLayout:"fixed"}});
+    var thead=el("thead");
+    var thr=el("tr",{style:{background:"#f9fafb",fontSize:"11px"}});
+    [["colIssue","40%","right"],["colStatus","25%","center"],["colDetails","35%","right"]].forEach(function(col){
+      var th=el("th",{style:{padding:"5px 8px",textAlign:col[2],width:col[1],borderBottom:"1px solid #e5e7eb",borderLeft:"1px solid #e5e7eb"}});
+      th.appendChild(siEl(S[col[0]],function(v){S[col[0]]=v;},{style:{fontSize:"11px",textAlign:col[2]}}));
+      thr.appendChild(th);
+    });
+    thead.appendChild(thr);tbl.appendChild(thead);
+
+    var tbody=el("tbody");
+    sec.items.forEach(function(item){
+      var tr=el("tr",{style:{borderTop:"1px solid #f3f4f6",fontSize:"13px"}});
+      var td1=el("td",{style:{padding:"5px 8px",borderLeft:"1px solid #f3f4f6"}});
+      var row1=el("div",{style:{display:"flex",alignItems:"center",gap:"4px"}});
+      var delItem=el("button",{className:"no-print",style:{background:"none",border:"none",cursor:"pointer",color:"#d1d5db",fontSize:"15px",flexShrink:0}});
+      delItem.textContent="⊖";
+      delItem.onclick=function(){sec.items=sec.items.filter(function(i){return i.id!==item.id;});render();};
+      row1.appendChild(delItem);
+      row1.appendChild(siEl(item.itemAr,function(v){item.itemAr=v;},{ph:"الوصف...",style:{fontSize:"13px"}}));
+      td1.appendChild(row1);tr.appendChild(td1);
+
+      var td2=el("td",{style:{padding:"4px 6px",borderLeft:"1px solid #f3f4f6",textAlign:"center"}});
+      var sel=el("select",{style:{width:"100%",background:"#f9fafb",border:"1px solid #e5e7eb",borderRadius:"6px",padding:"3px 2px",fontWeight:700,fontSize:"11px",cursor:"pointer"}});
+      [["","—"],["سليم","✅ سليم"],["صيانة","⚠️ صيانة"],["تالف","❌ تالف"]].forEach(function(opt){
+        var o=el("option",{value:opt[0]},opt[1]);if(item.status===opt[0])o.selected=true;sel.appendChild(o);
+      });
+      sel.addEventListener("change",function(e){item.status=e.target.value;});
+      td2.appendChild(sel);tr.appendChild(td2);
+
+      var td3=el("td",{style:{padding:"5px 8px"}});
+      td3.appendChild(siEl(item.notes,function(v){item.notes=v;},{ph:"ملاحظات...",style:{fontSize:"13px"}}));
+      tr.appendChild(td3);tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody);secDiv.appendChild(tbl);
+
+    var addItemBtn=el("button",{className:"no-print",style:{width:"100%",padding:"9px",background:"#f0fdf4",border:"none",borderTop:"1px solid #dcfce7",cursor:"pointer",fontWeight:700,fontSize:"12px",color:"#15803d"}});
+    addItemBtn.textContent="+ إضافة بند فحص";
+    addItemBtn.onclick=function(){sec.items.push({id:uid(),itemAr:"",itemEn:"",status:"",notes:""});render();};
+    secDiv.appendChild(addItemBtn);card.appendChild(secDiv);
+  });
+
+  var addSecBtn=el("button",{className:"no-print",style:{width:"100%",padding:"14px",border:"2px dashed #e5e7eb",borderRadius:"12px",background:"none",cursor:"pointer",fontWeight:700,color:"#9ca3af",marginBottom:"16px",fontSize:"13px"}});
+  addSecBtn.textContent="+ إضافة قسم جديد";
+  addSecBtn.onclick=function(){S.sections.push({id:uid(),titleAr:"قسم جديد",titleEn:"",items:[]});render();};
+  card.appendChild(addSecBtn);
+
+  /* ── Materials ── */
+  var matDiv=el("div",{style:{marginBottom:"16px",border:"1px solid #e5e7eb",borderRadius:"12px",overflow:"hidden"}});
+  var matHdr=el("div",{style:{padding:"9px 12px",background:"#f9fafb",borderBottom:"2px solid "+THEME}});
+  matHdr.appendChild(siEl(S.sparePartsTitle,function(v){S.sparePartsTitle=v;},{style:{fontWeight:700,fontSize:"14px"}}));
+  matDiv.appendChild(matHdr);
+
+  var matTbl=el("table",{style:{width:"100%",borderCollapse:"collapse",tableLayout:"fixed"}});
+  var matHead=el("thead");
+  var mhr=el("tr",{style:{background:"#f9fafb",fontSize:"11px"}});
+  var matCols=S.showPrices
+    ?[["colItem","","right"],["colType","18%","center"],["colQty","11%","center"],["colPrice","17%","center"],["colTotal","17%","center"]]
+    :[["colItem","","right"],["colType","20%","center"],["colQty","13%","center"]];
+  matCols.forEach(function(col){
+    var th=el("th",{style:{padding:"5px 8px",textAlign:col[2],width:col[1]||"auto",borderBottom:"1px solid #e5e7eb",borderLeft:"1px solid #e5e7eb"}});
+    th.appendChild(siEl(S[col[0]],function(v){S[col[0]]=v;},{style:{fontSize:"11px",textAlign:col[2]}}));
+    mhr.appendChild(th);
+  });
+  mhr.appendChild(el("th",{style:{width:"24px"}}));
+  matHead.appendChild(mhr);matTbl.appendChild(matHead);
+
+  var matBody=el("tbody");
+  S.materials.forEach(function(m){
+    var tr=el("tr",{style:{borderTop:"1px solid #f3f4f6",fontSize:"13px"}});
+    function addTd(val,k,opts){
+      opts=opts||{};
+      var td=el("td",{style:{padding:"5px 8px",borderLeft:"1px solid #f3f4f6",textAlign:opts.center?"center":"right"}});
+      td.appendChild(siEl(val,function(v){m[k]=v;},{type:opts.num?"number":"text",style:{textAlign:opts.center?"center":"right"}}));
+      tr.appendChild(td);
+    }
+    addTd(m.name,"name");addTd(m.type,"type",{center:true});addTd(m.qty,"qty",{center:true,num:true});
+    if(S.showPrices){
+      addTd(m.price,"price",{center:true,num:true});
+      var totalTd=el("td",{style:{padding:"5px 8px",textAlign:"center",fontWeight:700,color:THEME}});
+      totalTd.textContent=(parseFloat(m.qty||0)*parseFloat(m.price||0)).toLocaleString()+" "+S.currency;
+      tr.appendChild(totalTd);
+    }
+    var delTd=el("td",{style:{textAlign:"center",padding:"2px"}});
+    var delMatBtn=el("button",{className:"no-print",style:{background:"none",border:"none",cursor:"pointer",color:"#d1d5db",fontSize:"16px"}});
+    delMatBtn.textContent="⊖";
+    delMatBtn.onclick=function(){S.materials=S.materials.filter(function(x){return x.id!==m.id;});render();};
+    delTd.appendChild(delMatBtn);tr.appendChild(delTd);matBody.appendChild(tr);
+  });
+
+  if(S.showPrices){
+    var total=S.materials.reduce(function(s,m){return s+parseFloat(m.qty||0)*parseFloat(m.price||0);},0);
+    var ttr=el("tr",{style:{borderTop:"2px solid #e5e7eb",background:"#fff7ed"}});
+    var ttd1=el("td",{style:{padding:"8px 10px",fontWeight:700,color:THEME,fontSize:"13px"},colSpan:S.showPrices?4:3});
+    ttd1.appendChild(siEl(S.lblGrandTotal,function(v){S.lblGrandTotal=v;},{style:{fontWeight:700,color:THEME}}));
+    ttr.appendChild(ttd1);
+    var ttd2=el("td",{style:{padding:"8px",textAlign:"center",fontWeight:900,fontSize:"15px",color:THEME}});
+    ttd2.textContent=total.toLocaleString()+" "+S.currency;ttr.appendChild(ttd2);
+    ttr.appendChild(el("td"));matBody.appendChild(ttr);
+  }
+  matTbl.appendChild(matBody);matDiv.appendChild(matTbl);
+  var addMatBtn=el("button",{className:"no-print",style:{width:"100%",padding:"9px",background:"#f0fdf4",border:"none",borderTop:"1px solid #dcfce7",cursor:"pointer",fontWeight:700,fontSize:"12px",color:"#15803d"}});
+  addMatBtn.textContent="+ إضافة قطعة غيار";
+  addMatBtn.onclick=function(){S.materials.push({id:uid(),name:"",qty:"1",type:"",price:"0"});render();};
+  matDiv.appendChild(addMatBtn);card.appendChild(matDiv);
+
+  /* ── Assessment ── */
+  var assGrid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"16px"}});
+  [["assessmentTitle","generalAssessment"],["recommendationsTitle","recommendations"]].forEach(function(pair){
+    var d=el("div",{style:{border:"1px solid #e5e7eb",borderRadius:"12px",overflow:"hidden"}});
+    var dh=el("div",{style:{padding:"7px 12px",background:"#f9fafb",borderBottom:"1px solid #e5e7eb"}});
+    dh.appendChild(siEl(S[pair[0]],function(v){S[pair[0]]=v;},{style:{fontWeight:700,fontSize:"13px"}}));
+    d.appendChild(dh);
+    var ta=document.createElement("textarea");
+    ta.value=S[pair[1]];ta.placeholder="...";
+    Object.assign(ta.style,{width:"100%",padding:"12px",height:"100px",border:"none",outline:"none",resize:"none",fontSize:"13px",color:TC,background:"transparent",fontFamily:"Tajawal,sans-serif"});
+    var printDiv=document.createElement("div");
+    printDiv.className="print-only";
+    printDiv.textContent=S[pair[1]]||"";
+    ta.addEventListener("input",function(e){S[pair[1]]=e.target.value;printDiv.textContent=e.target.value;});
+    d.appendChild(ta);d.appendChild(printDiv);assGrid.appendChild(d);
+  });
+  card.appendChild(assGrid);
+
+  /* ── Photos ── */
+  var phDiv=el("div",{style:{borderTop:"2px solid "+THEME,paddingTop:"16px",marginBottom:"16px"}});
+  var phHdr=el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"12px",flexWrap:"wrap",gap:"8px"}});
+  phHdr.appendChild(siEl(S.visualsTitle,function(v){S.visualsTitle=v;},{style:{fontWeight:900,fontSize:"17px"}}));
+  var phLbl=el("label",{className:"btn no-print",style:{background:THEME,color:"white",cursor:"pointer"}});
+  phLbl.textContent="📷 صور المعاينة";
+  var phInp=el("input",{type:"file",multiple:true,accept:"image/*"});phInp.style.display="none";
+  phInp.addEventListener("change",async function(e){
+    var files=Array.from(e.target.files);
+    for(var i=0;i<files.length;i++){
+      var url=await new Promise(function(res){
+        var r=new FileReader();r.readAsDataURL(files[i]);
+        r.onload=async function(ev){res(await compress(ev.target.result,500,0.4));};
+      });
+      S.photos.push({id:uid(),url:url,desc:""});
+    }
+    render();e.target.value="";
+  });
+  phLbl.appendChild(phInp);phHdr.appendChild(phLbl);phDiv.appendChild(phHdr);
+
+  var phGrid=el("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"8px"}});
+  S.photos.forEach(function(p){
+    var pd=el("div",{style:{border:"1px solid #f3f4f6",borderRadius:"10px",padding:"5px",position:"relative",background:"white"}});
+    var delPh=el("button",{className:"no-print",style:{position:"absolute",top:"-8px",left:"-8px",background:"#dc2626",color:"white",border:"none",borderRadius:"50%",width:"22px",height:"22px",cursor:"pointer",fontSize:"12px",zIndex:1,display:"flex",alignItems:"center",justifyContent:"center"}});
+    delPh.textContent="✕";
+    delPh.onclick=function(){S.photos=S.photos.filter(function(x){return x.id!==p.id;});render();};
+    pd.appendChild(delPh);
+    pd.appendChild(el("img",{src:p.url,style:{width:"100%",aspectRatio:"1",objectFit:"cover",borderRadius:"7px",display:"block",marginBottom:"5px"}}));
+    var descInp=document.createElement("input");
+    descInp.type="text";descInp.value=p.desc||"";descInp.placeholder="وصف...";
+    Object.assign(descInp.style,{width:"100%",fontSize:"11px",textAlign:"center",background:"#f9fafb",border:"none",borderRadius:"5px",padding:"3px",outline:"none",fontFamily:"Tajawal,sans-serif"});
+    descInp.addEventListener("input",function(e){p.desc=e.target.value;});
+    pd.appendChild(descInp);phGrid.appendChild(pd);
+  });
+  phDiv.appendChild(phGrid);card.appendChild(phDiv);
+
+  /* ── Disclaimer ── */
+  var disc=el("div",{style:{borderTop:"1px solid #e5e7eb",paddingTop:"10px",textAlign:"center"}});
+  var discTa=document.createElement("textarea");
+  discTa.value=S.disclaimer;
+  Object.assign(discTa.style,{width:"100%",textAlign:"center",fontSize:"11px",height:"45px",border:"none",outline:"none",background:"transparent",opacity:.4,resize:"none",fontFamily:"Tajawal,sans-serif",direction:"rtl"});
+  var discPrint=document.createElement("div");
+  discPrint.className="print-only";
+  discPrint.textContent=S.disclaimer||"";
+  Object.assign(discPrint.style,{textAlign:"center",fontSize:"11px",opacity:.5,direction:"rtl"});
+  discTa.addEventListener("input",function(e){S.disclaimer=e.target.value;discPrint.textContent=e.target.value;});
+  disc.appendChild(discTa);disc.appendChild(discPrint);card.appendChild(disc);
+  wrap.appendChild(card);return wrap;
+}
+
+/* ── Init ── */
+window.addEventListener("DOMContentLoaded",function(){
+  render();
+  loadReports();
+  setInterval(function(){loadReports(true);},20000);
+});
+</script>
+</body>
+</html>
