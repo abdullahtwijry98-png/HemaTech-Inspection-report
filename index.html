@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>همة تك - تقارير الفحص</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800;900&display=swap" rel="stylesheet">
+<style>
+  *{font-family:'Tajawal',sans-serif;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  body{margin:0;background:#f9fafb;direction:rtl;}
+  input,textarea,select{font-family:'Tajawal',sans-serif;font-size:15px;}
+  input[type=number]::-webkit-inner-spin-button{display:none;}
+  .si{background:transparent;outline:none;border:none;border-bottom:1px solid transparent;width:100%;padding:3px 0;color:#131A23;transition:border-color .2s;}
+  .si:hover{border-bottom-color:#fdba74;}
+  .si:focus{border-bottom-color:#f97316;}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  .fade-up{animation:fadeUp .25s ease-out;}
+  .truncate{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+  @media print{
+    body *{visibility:hidden!important;}
+    #print-area,#print-area *{visibility:visible!important;}
+    #print-area{position:fixed!important;top:0!important;left:0!important;width:100%!important;padding:8mm!important;background:white!important;}
+    @page{size:A4;margin:10mm;}
+    *{print-color-adjust:exact!important;-webkit-print-color-adjust:exact!important;}
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useReducer, useMemo, useRef } = React;
+
+// ── Config ──────────────────────────────────────────────────
+const THEME = "#DD4726";
+const TC    = "#131A23";
+const PID   = "hematech-report";
+const FS    = `https://firestore.googleapis.com/v1/projects/${PID}/databases/(default)/documents`;
+const COL_R = "hemah_reports";
+const COL_P = "hemah_photos";
+
+// ── Firestore REST ───────────────────────────────────────────
+const toV = v => {
+  if (v===null||v===undefined) return {nullValue:null};
+  if (typeof v==="boolean")    return {booleanValue:v};
+  if (typeof v==="number")     return Number.isInteger(v)?{integerValue:String(v)}:{doubleValue:v};
+  if (typeof v==="string")     return {stringValue:v};
+  if (Array.isArray(v))        return {arrayValue:{values:v.map(toV)}};
+  if (typeof v==="object")     return {mapValue:{fields:toF(v)}};
+  return {stringValue:String(v)};
+};
+const fromV = v => {
+  if (!v) return null;
+  if ("nullValue"    in v) return null;
+  if ("booleanValue" in v) return v.booleanValue;
+  if ("integerValue" in v) return parseInt(v.integerValue,10);
+  if ("doubleValue"  in v) return v.doubleValue;
+  if ("stringValue"  in v) return v.stringValue;
+  if ("arrayValue"   in v) return (v.arrayValue.values||[]).map(fromV);
+  if ("mapValue"     in v) return fromF(v.mapValue.fields||{});
+  return null;
+};
+const toF   = o => Object.fromEntries(Object.entries(o).map(([k,v])=>[k,toV(v)]));
+const fromF = f => Object.fromEntries(Object.entries(f).map(([k,v])=>[k,fromV(v)]));
+const docToObj = d => ({...fromF(d.fields||{}), _id: d.name?.split("/").pop()});
+const objToDoc = o => { const c={...o}; delete c._id; return {fields:toF(c)}; };
+
+const fsSet = async (col,id,data) => {
+  const r = await fetch(`${FS}/${col}/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(objToDoc(data))});
+  if(!r.ok){const e=await r.json();throw new Error(e.error?.message||`HTTP ${r.status}`);}
+  return r.json();
+};
+const fsGet = async (col,id) => {
+  const r = await fetch(`${FS}/${col}/${id}`);
+  if(r.status===404) return null;
+  if(!r.ok){const e=await r.json();throw new Error(e.error?.message||`HTTP ${r.status}`);}
+  return docToObj(await r.json());
+};
+const fsList = async col => {
+  const r = await fetch(`${FS}/${col}?pageSize=200`);
+  if(!r.ok) return [];
+  const d = await r.json();
+  return (d.documents||[]).map(docToObj);
+};
+const fsDel = async (col,id) => {
+  await fetch(`${FS}/${col}/${id}`,{method:"DELETE"});
+};
+
+// ── Helpers ──────────────────────────────────────────────────
+const uid = () => Math.random().toString(36).slice(2,11);
+const riyadhNow = () => {
+  try {
+    const f = new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Riyadh",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
+    const p={}; f.formatToParts(new Date()).forEach(({type,value})=>(p[type]=value));
+    return {date:`${p.year}-${p.month}-${p.day}`,reportId:`HT-${p.year}${p.month}${p.day}-${p.hour}${p.minute}`};
+  } catch { const n=new Date(); return {date:n.toISOString().split("T")[0],reportId:`HT-${Date.now().toString().slice(-8)}`}; }
+};
+const compressImg = (src,maxPx=500,q=0.35) => new Promise(res=>{
+  const img=new Image(); img.src=src;
+  img.onload=()=>{
+    let w=img.width,h=img.height;
+    if(w>maxPx){h=Math.round(h*maxPx/w);w=maxPx;}
+    const c=document.createElement("canvas"); c.width=w; c.height=h;
+    c.getContext("2d").drawImage(img,0,0,w,h);
+    res(c.toDataURL("image/jpeg",q));
+  };
+  img.onerror=()=>res(src);
+});
+
+// localStorage for logos
+const LS = {
+  get: k=>{ try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch{return null;} },
+  set: (k,v)=>{ try{localStorage.setItem(k,JSON.stringify(v));return true;}catch{return false;} },
+};
+
+// ── Blank State ──────────────────────────────────────────────
+const blank = () => {
+  const t=riyadhNow();
+  return {
+    companyAr:"همة تك للصيانة", companyEn:"HEME TECH MAINTENANCE",
+    reportTitleAr:"تقرير فحص فني شامل |", reportTitleEn:"Technical Inspection Report",
+    lblCustomer:"اسم العميل:", lblReportId:"رقم التقرير:", lblDate:"تاريخ الفحص:", lblAddress:"العنوان:",
+    colIssue:"المشكلة / Issue", colStatus:"الحالة / Status", colDetails:"التفاصيل / Details",
+    sparePartsTitle:"قطع الغيار | Spare Parts", colItem:"الصنف / Item", colType:"النوع / Type",
+    colQty:"الكمية", colPrice:"السعر (ر.س)", colTotal:"الإجمالي (ر.س)",
+    lblGrandTotal:"الإجمالي الكلي التقديري (ر.س):", currency:"ر.س",
+    assessmentTitle:"التقييم العام | Assessment", recommendationsTitle:"التوصيات | Recommendations",
+    visualsTitle:"التوثيق الصوري | Visuals",
+    disclaimer:"إخلاء مسؤولية: هذا التقرير يوثق الحالة الظاهرية للعقار وقت الفحص ولا يعد ضماناً ضد العيوب الخفية.",
+    showPrices:false, customerName:"", address:"",
+    reportId:t.reportId, date:t.date, logo1:null, logo2:null,
+    sections:[
+      {id:uid(),titleAr:"مشاكل الكهرباء",titleEn:"Electrical Issues",items:[{id:uid(),itemAr:"التمديدات والقواطع",itemEn:"",status:"",notes:""}]},
+      {id:uid(),titleAr:"مشاكل السباكة", titleEn:"Plumbing Issues",  items:[{id:uid(),itemAr:"المحابس والخلاطات", itemEn:"",status:"",notes:""}]},
+    ],
+    materials:[{id:uid(),name:"",qty:"1",type:"",price:"0"}],
+    generalAssessment:"", recommendations:"", photos:[],
+  };
+};
+
+function reducer(s,a){
+  switch(a.type){
+    case "SET":      return {...s,[a.k]:a.v};
+    case "TOGGLE_P": return {...s,showPrices:!s.showPrices};
+    case "UPD_SEC":  return {...s,sections:s.sections.map(x=>x.id===a.id?{...x,[a.k]:a.v}:x)};
+    case "ADD_SEC":  return {...s,sections:[...s.sections,{id:uid(),titleAr:"قسم جديد",titleEn:"",items:[]}]};
+    case "DEL_SEC":  return {...s,sections:s.sections.filter(x=>x.id!==a.id)};
+    case "ADD_ITEM": return {...s,sections:s.sections.map(x=>x.id===a.sid?{...x,items:[...x.items,{id:uid(),itemAr:"",itemEn:"",status:"",notes:""}]}:x)};
+    case "UPD_ITEM": return {...s,sections:s.sections.map(x=>x.id===a.sid?{...x,items:x.items.map(i=>i.id===a.iid?{...i,[a.k]:a.v}:i)}:x)};
+    case "DEL_ITEM": return {...s,sections:s.sections.map(x=>x.id===a.sid?{...x,items:x.items.filter(i=>i.id!==a.iid)}:x)};
+    case "UPD_MAT":  return {...s,materials:s.materials.map(m=>m.id===a.id?{...m,[a.k]:a.v}:m)};
+    case "ADD_MAT":  return {...s,materials:[...s.materials,{id:uid(),name:"",qty:"1",type:"",price:"0"}]};
+    case "DEL_MAT":  return {...s,materials:s.materials.filter(m=>m.id!==a.id)};
+    case "ADD_PICS": return {...s,photos:[...s.photos,...a.v]};
+    case "DEL_PIC":  return {...s,photos:s.photos.filter(p=>p.id!==a.id)};
+    case "LOAD":     return {...blank(),...a.v,photos:a.v.photos||[]};
+    case "RESET":    return {...blank(),logo1:a.logo1||null,logo2:a.logo2||null};
+    default:         return s;
+  }
+}
+
+// ── SI Component ─────────────────────────────────────────────
+const SI = ({value,onChange,className="",style={},placeholder,type="text",...rest})=>(
+  <input type={type} value={value||""} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+    className={`si ${className}`} style={{fontSize:15,color:TC,...style}} {...rest}/>
+);
+
+// ── Icons (SVG inline) ───────────────────────────────────────
+const Ic = ({d,size=18,color="currentColor"}) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    {d.map((p,i)=><path key={i} d={p}/>)}
+  </svg>
+);
+const Icons = {
+  plus:     ["M12 5v14","M5 12h14"],
+  trash:    ["M3 6h18","M19 6l-1 14H6L5 6","M8 6V4h8v2"],
+  download: ["M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4","M7 10l5 5 5-5","M12 15V3"],
+  save:     ["M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z","M17 21v-8H7v8","M7 3v5h8"],
+  cloud:    ["M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z"],
+  camera:   ["M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z","M12 17a4 4 0 100-8 4 4 0 000 8z"],
+  folder:   ["M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"],
+  arrow:    ["M5 12h14","M12 5l7 7-7 7"],
+  eye:      ["M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z","M12 9a3 3 0 100 6 3 3 0 000-6z"],
+  eyeOff:   ["M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94","M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19","M1 1l22 22"],
+  refresh:  ["M23 4v6h-6","M1 20v-6h6","M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"],
+  printer:  ["M6 9V2h12v7","M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2","M6 14h12v8H6z"],
+  minus:    ["M5 12h14"],
+  check:    ["M20 6L9 17l-5-5"],
+  alert:    ["M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z","M12 9v4","M12 17h.01"],
+  spin:     ["M21 12a9 9 0 11-18 0 9 9 0 0118 0"],
+};
+
+// ── Main App ─────────────────────────────────────────────────
+function App(){
+  const [view,setView]     = useState("dashboard");
+  const [state,dispatch]   = useReducer(reducer,null,blank);
+  const [reports,setRpts]  = useState([]);
+  const [saving,setSaving] = useState(false);
+  const [loading,setLoad]  = useState(true);
+  const [conn,setConn]     = useState("loading");
+  const [alert,setAlert]   = useState({show:false,msg:"",type:"info",cb:null});
+  const pollRef            = useRef(null);
+
+  const showAlert   = msg    => setAlert({show:true,msg,type:"info",cb:null});
+  const showConfirm = (msg,cb)=> setAlert({show:true,msg,type:"confirm",cb});
+  const closeAlert  = ()     => setAlert({show:false,msg:"",type:"info",cb:null});
+
+  const loadReports = async(silent=false)=>{
+    if(!silent) setLoad(true);
+    try{
+      const docs = await fsList(COL_R);
+      docs.sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
+      setRpts(docs); setConn("ok");
+    }catch(e){ setConn("error"); if(!silent) showAlert("فشل الاتصال بـ Firebase:\n"+e.message+"\n\nتأكد من تفعيل Firestore Test Mode."); }
+    setLoad(false);
+  };
+
+  useEffect(()=>{
+    loadReports();
+    pollRef.current=setInterval(()=>loadReports(true),20000);
+    // استخرج الشعارات من أول تقرير محفوظ محلياً
+    return ()=>clearInterval(pollRef.current);
+  },[]);
+
+  const handleSave = async()=>{
+    setSaving(true);
+    try{
+      const now=Date.now();
+      const meta={...state,photos:[],logo1:null,logo2:null,updatedAt:now,savedAt:state.savedAt||now};
+      await fsSet(COL_R,state.reportId,meta);
+      // حفظ الصور منفصلة
+      const photos=await Promise.all((state.photos||[]).map(async p=>({...p,url:await compressImg(p.url,350,0.25)})));
+      try{ await fsSet(COL_P,state.reportId,{photos,updatedAt:now}); }catch{}
+      await loadReports(true);
+      showAlert("✅ تم الحفظ السحابي!\nيظهر على جميع الأجهزة فوراً.");
+    }catch(e){ showAlert("فشل الحفظ: "+e.message); }
+    setSaving(false);
+  };
+
+  const openReport = async r=>{
+    let full={...r};
+    try{
+      const pd=await fsGet(COL_P,r.reportId||r._id);
+      if(pd) full.photos=pd.photos||[];
+    }catch{}
+    // استعادة الشعارات من localStorage
+    if(!full.logo1) full.logo1=LS.get("default_logo1");
+    if(!full.logo2) full.logo2=LS.get("default_logo2");
+    dispatch({type:"LOAD",v:full});
+    setView("editor");
+  };
+
+  const deleteReport = id=>showConfirm("حذف التقرير نهائياً؟",async()=>{
+    try{ await fsDel(COL_R,id); try{await fsDel(COL_P,id);}catch{} setRpts(p=>p.filter(r=>(r.reportId||r._id)!==id)); }
+    catch(e){ showAlert("فشل الحذف: "+e.message); }
+  });
+
+  const exportJSON = (data=state)=>{
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(new Blob([JSON.stringify(data)],{type:"application/json"}));
+    a.download=`HemahTech_${data.reportId}.json`; a.click();
+  };
+
+  const importJSON = e=>{
+    const file=e.target.files[0]; if(!file) return;
+    const r=new FileReader();
+    r.onload=ev=>{try{dispatch({type:"LOAD",v:JSON.parse(ev.target.result)});setView("editor");}catch{showAlert("ملف غير صالح.");}};
+    r.readAsText(file); e.target.value="";
+  };
+
+  const handlePhotos = async e=>{
+    const pics=await Promise.all(Array.from(e.target.files).map(file=>new Promise(res=>{
+      const r=new FileReader(); r.readAsDataURL(file);
+      r.onload=async ev=>{const url=await compressImg(ev.target.result,500,0.35); res({id:uid(),url,desc:""});};
+    })));
+    dispatch({type:"ADD_PICS",v:pics}); e.target.value="";
+  };
+
+  const handleLogo = async(e,field)=>{
+    const file=e.target.files[0]; if(!file) return;
+    const r=new FileReader();
+    r.onload=async ev=>{
+      const c=await compressImg(ev.target.result,400,0.7);
+      dispatch({type:"SET",k:field,v:c});
+      LS.set("default_"+field,c);
+    };
+    r.readAsDataURL(file);
+  };
+
+  const grandTotal=useMemo(()=>state.materials.reduce((s,m)=>s+parseFloat(m.qty||0)*parseFloat(m.price||0),0),[state.materials]);
+
+  const printReport = ()=>{
+    window.print();
+  };
+
+  // ── DASHBOARD ──────────────────────────────────────────────
+  if(view==="dashboard") return (
+    <div style={{minHeight:"100vh",background:"#f9fafb",paddingBottom:80}}>
+      <div style={{maxWidth:900,margin:"0 auto",padding:"16px 12px"}}>
+        {/* Header */}
+        <div style={{background:"white",borderRadius:16,padding:16,boxShadow:"0 1px 4px rgba(0,0,0,.06)",marginBottom:16,display:"flex",flexWrap:"wrap",justifyContent:"space-between",alignItems:"center",gap:12}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:22,fontWeight:900,color:"#1f2937"}}>الصفحة الرئيسية</span>
+            <span style={{fontSize:11,padding:"3px 10px",borderRadius:20,fontWeight:700,background:conn==="ok"?"#dcfce7":conn==="error"?"#fee2e2":"#fef9c3",color:conn==="ok"?"#15803d":conn==="error"?"#dc2626":"#92400e"}}>
+              {conn==="ok"?"☁️ متصل":conn==="error"?"⚠️ خطأ":"⏳"}
+            </span>
+          </div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <button onClick={()=>loadReports()} style={{padding:"8px 12px",background:"#f3f4f6",border:"none",borderRadius:10,cursor:"pointer",display:"flex",alignItems:"center",gap:6,fontWeight:700,fontSize:12}}>
+              🔄 تحديث
+            </button>
+            <label style={{padding:"8px 14px",background:"#f3f4f6",border:"none",borderRadius:10,cursor:"pointer",display:"flex",alignItems:"center",gap:6,fontWeight:700,fontSize:12}}>
+              📂 استعادة JSON <input type="file" accept=".json" style={{display:"none"}} onChange={importJSON}/>
+            </label>
+            <button onClick={()=>{const l1=LS.get("default_logo1"),l2=LS.get("default_logo2");dispatch({type:"RESET",logo1:l1,logo2:l2});setView("editor");}}
+              style={{padding:"8px 18px",background:THEME,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:900,fontSize:13,display:"flex",alignItems:"center",gap:6}}>
+              + تقرير جديد
+            </button>
+          </div>
+        </div>
+
+        {conn==="error"&&(
+          <div style={{background:"#fef2f2",border:"1px solid #fecaca",borderRadius:12,padding:14,marginBottom:16,fontSize:13,color:"#dc2626",lineHeight:1.7}}>
+            <strong>❌ لا يوجد اتصال بـ Firebase</strong><br/>
+            تأكد من تفعيل Firestore Rules (Test Mode) في مشروعك.
+          </div>
+        )}
+
+        {loading?(
+          <div style={{textAlign:"center",padding:"60px 0",color:"#9ca3af"}}>
+            <div style={{fontSize:40,marginBottom:12}}>⏳</div>
+            <div style={{fontWeight:700}}>جاري التحميل...</div>
+          </div>
+        ):reports.length===0?(
+          <div style={{background:"white",borderRadius:20,border:"2px dashed #e5e7eb",padding:60,textAlign:"center"}}>
+            <div style={{fontSize:50,marginBottom:12}}>📂</div>
+            <div style={{fontWeight:700,fontSize:18,color:"#4b5563",marginBottom:6}}>لا توجد تقارير بعد</div>
+            <div style={{fontSize:13,color:"#9ca3af"}}>أنشئ تقريرك الأول — سيظهر على جميع الأجهزة فوراً</div>
+          </div>
+        ):(
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14}}>
+            {reports.map(r=>(
+              <div key={r.reportId||r._id} style={{background:"white",borderRadius:16,padding:16,boxShadow:"0 1px 4px rgba(0,0,0,.06)",border:"1px solid #f3f4f6"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                  <span style={{background:"#fff7ed",color:THEME,padding:"3px 10px",borderRadius:8,fontSize:11,fontWeight:900,direction:"ltr"}}>{r.reportId||r._id}</span>
+                  <div style={{display:"flex",gap:4}}>
+                    <button onClick={()=>exportJSON(r)} style={{background:"none",border:"none",cursor:"pointer",color:"#9ca3af",fontSize:16,padding:4}}>⬇</button>
+                    <button onClick={()=>deleteReport(r.reportId||r._id)} style={{background:"none",border:"none",cursor:"pointer",color:"#9ca3af",fontSize:16,padding:4}}>🗑</button>
+                  </div>
+                </div>
+                <div style={{fontWeight:700,fontSize:15,color:"#1f2937",marginBottom:10,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{r.customerName||"بدون اسم عميل"}</div>
+                <div style={{fontSize:12,color:"#6b7280",marginBottom:4}}>📅 {r.date}</div>
+                <div style={{fontSize:12,color:"#6b7280",marginBottom:14}}>📍 {r.address||"بدون عنوان"}</div>
+                <button onClick={()=>openReport(r)}
+                  style={{width:"100%",padding:"10px",background:"#f9fafb",border:"none",borderRadius:10,fontWeight:700,fontSize:13,cursor:"pointer",color:"#1f2937"}}
+                  onMouseEnter={e=>{e.currentTarget.style.background=THEME;e.currentTarget.style.color="white";}}
+                  onMouseLeave={e=>{e.currentTarget.style.background="#f9fafb";e.currentTarget.style.color="#1f2937";}}>
+                  فتح التقرير ←
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Alert */}
+      {alert.show&&(
+        <div className="fade-up" style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16}}>
+          <div style={{background:"white",borderRadius:20,padding:24,maxWidth:340,width:"100%",textAlign:"center",borderTop:`4px solid ${THEME}`}}>
+            <div style={{fontSize:40,marginBottom:12}}>{alert.type==="info"?"✅":"⚠️"}</div>
+            <div style={{fontWeight:700,fontSize:15,marginBottom:20,whiteSpace:"pre-line",color:TC}}>{alert.msg}</div>
+            <div style={{display:"flex",justifyContent:"center",gap:10}}>
+              {alert.type==="confirm"&&<button onClick={()=>{alert.cb();closeAlert();}} style={{padding:"10px 24px",background:THEME,color:"white",border:"none",borderRadius:10,fontWeight:700,cursor:"pointer"}}>نعم</button>}
+              <button onClick={closeAlert} style={{padding:"10px 24px",background:"#f3f4f6",border:"none",borderRadius:10,fontWeight:700,cursor:"pointer"}}>{alert.type==="confirm"?"إلغاء":"حسناً"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  // ── EDITOR ─────────────────────────────────────────────────
+  return (
+    <div style={{minHeight:"100vh",background:"#f9fafb",paddingBottom:80}}>
+      {/* Toolbar */}
+      <div style={{position:"sticky",top:0,zIndex:50,background:"rgba(255,255,255,.96)",backdropFilter:"blur(8px)",borderBottom:"1px solid #e5e7eb",padding:"8px 12px",display:"flex",flexWrap:"wrap",justifyContent:"space-between",alignItems:"center",gap:8}}>
+        <button onClick={()=>setView("dashboard")} style={{padding:"8px 12px",background:"#f3f4f6",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:12,display:"flex",alignItems:"center",gap:6}}>
+          → الرئيسية
+        </button>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+          <button onClick={()=>exportJSON()} style={{padding:"7px 12px",background:"#1f2937",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:11}}>⬇ JSON</button>
+          <label style={{padding:"7px 12px",background:"#f3f4f6",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:11}}>
+            📂 استعادة <input type="file" accept=".json" style={{display:"none"}} onChange={importJSON}/>
+          </label>
+          <button onClick={handleSave} disabled={saving} style={{padding:"7px 14px",background:"#2563eb",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:11,opacity:saving?.6:1,display:"flex",alignItems:"center",gap:6}}>
+            {saving?"⏳":"☁️"} حفظ سحابي
+          </button>
+          <button onClick={printReport} style={{padding:"7px 12px",background:"#16a34a",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:11}}>
+            🖨️ طباعة
+          </button>
+          <button onClick={()=>dispatch({type:"TOGGLE_P"})} style={{padding:"7px 12px",background:state.showPrices?THEME:"#fff7ed",color:state.showPrices?"white":THEME,border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:11}}>
+            {state.showPrices?"إخفاء الأسعار":"تفعيل الأسعار"}
+          </button>
+        </div>
+      </div>
+
+      {/* Report Content */}
+      <div id="print-area" style={{maxWidth:800,margin:"16px auto",background:"white",borderRadius:16,padding:"16px",boxShadow:"0 4px 20px rgba(0,0,0,.08)",border:"1px solid #f3f4f6"}}>
+
+        {/* Header */}
+        <div style={{display:"flex",alignItems:"center",gap:10,paddingBottom:16,marginBottom:20,borderBottom:`4px solid ${THEME}`}}>
+          <label style={{flexShrink:0,width:64,height:64,border:"2px dashed #e5e7eb",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",overflow:"hidden"}}>
+            {state.logo1?<img src={state.logo1} style={{width:"100%",height:"100%",objectFit:"contain",padding:2}}/>:<span style={{fontSize:20}}>📷</span>}
+            <input type="file" style={{display:"none"}} onChange={e=>handleLogo(e,"logo1")}/>
+          </label>
+          <div style={{flex:1,textAlign:"center",overflow:"hidden"}}>
+            <SI value={state.companyAr} onChange={v=>dispatch({type:"SET",k:"companyAr",v})} style={{fontSize:18,fontWeight:900,textAlign:"center",display:"block"}}/>
+            <SI value={state.companyEn} onChange={v=>dispatch({type:"SET",k:"companyEn",v})} style={{fontSize:11,textAlign:"center",opacity:.5,display:"block",textTransform:"uppercase"}}/>
+            <div style={{height:1,background:"#333",opacity:.2,margin:"6px 0"}}/>
+            <SI value={state.reportTitleAr} onChange={v=>dispatch({type:"SET",k:"reportTitleAr",v})} style={{fontSize:14,fontWeight:700,textAlign:"center",display:"block"}}/>
+            <SI value={state.reportTitleEn} onChange={v=>dispatch({type:"SET",k:"reportTitleEn",v})} style={{fontSize:11,textAlign:"center",display:"block"}}/>
+          </div>
+          <label style={{flexShrink:0,width:64,height:64,border:"2px dashed #e5e7eb",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",overflow:"hidden"}}>
+            {state.logo2?<img src={state.logo2} style={{width:"100%",height:"100%",objectFit:"contain",padding:2}}/>:<span style={{fontSize:20}}>📷</span>}
+            <input type="file" style={{display:"none"}} onChange={e=>handleLogo(e,"logo2")}/>
+          </label>
+        </div>
+
+        {/* Customer Info */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,border:`2px solid ${TC}`,padding:14,borderRadius:12,marginBottom:20,background:"#fafafa"}}>
+          {[["lblCustomer","customerName"],["lblReportId","reportId",true],["lblDate","date","date"],["lblAddress","address"]].map(([l,v,ltr])=>(
+            <div key={v} style={{borderBottom:"1px solid #e5e7eb",paddingBottom:8}}>
+              <SI value={state[l]} onChange={val=>dispatch({type:"SET",k:l,v:val})} style={{fontSize:11,fontWeight:700,color:THEME,display:"block"}}/>
+              <SI type={ltr==="date"?"date":"text"} value={state[v]} onChange={val=>dispatch({type:"SET",k:v,v:val})}
+                style={{fontSize:14,fontWeight:700,direction:ltr===true?"ltr":"rtl"}} placeholder="..."/>
+            </div>
+          ))}
+        </div>
+
+        {/* Sections */}
+        {state.sections.map(sec=>(
+          <div key={sec.id} style={{marginBottom:16,border:"1px solid #e5e7eb",borderRadius:12,overflow:"hidden"}}>
+            <div style={{padding:"10px 12px",background:"#f9fafb",borderBottom:`2px solid ${THEME}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{flex:1}}>
+                <SI value={sec.titleAr} onChange={v=>dispatch({type:"UPD_SEC",id:sec.id,k:"titleAr",v})} style={{fontWeight:700,fontSize:15}}/>
+                <SI value={sec.titleEn} onChange={v=>dispatch({type:"UPD_SEC",id:sec.id,k:"titleEn",v})} style={{fontSize:11,opacity:.4,direction:"ltr"}}/>
+              </div>
+              <button onClick={()=>dispatch({type:"DEL_SEC",id:sec.id})} style={{background:"none",border:"none",cursor:"pointer",color:"#f87171",fontSize:18,padding:"4px 8px"}}>🗑</button>
+            </div>
+            <table style={{width:"100%",borderCollapse:"collapse",tableLayout:"fixed"}}>
+              <thead style={{background:"#f9fafb",fontSize:11}}>
+                <tr>
+                  <th style={{padding:"6px 8px",textAlign:"right",width:"40%",borderLeft:"1px solid #e5e7eb",borderBottom:"1px solid #e5e7eb"}}>
+                    <SI value={state.colIssue} onChange={v=>dispatch({type:"SET",k:"colIssue",v})} style={{fontSize:11}}/>
+                  </th>
+                  <th style={{padding:"6px 8px",textAlign:"center",width:"25%",borderLeft:"1px solid #e5e7eb",borderBottom:"1px solid #e5e7eb"}}>
+                    <SI value={state.colStatus} onChange={v=>dispatch({type:"SET",k:"colStatus",v})} style={{fontSize:11,textAlign:"center"}}/>
+                  </th>
+                  <th style={{padding:"6px 8px",textAlign:"right",borderBottom:"1px solid #e5e7eb"}}>
+                    <SI value={state.colDetails} onChange={v=>dispatch({type:"SET",k:"colDetails",v})} style={{fontSize:11}}/>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sec.items.map(item=>(
+                  <tr key={item.id} style={{borderTop:"1px solid #f3f4f6",fontSize:13}}>
+                    <td style={{padding:"6px 8px",borderLeft:"1px solid #f3f4f6"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <button onClick={()=>dispatch({type:"DEL_ITEM",sid:sec.id,iid:item.id})} style={{background:"none",border:"none",cursor:"pointer",color:"#d1d5db",fontSize:14,flexShrink:0}}>⊖</button>
+                        <SI value={item.itemAr} onChange={v=>dispatch({type:"UPD_ITEM",sid:sec.id,iid:item.id,k:"itemAr",v})} placeholder="الوصف..." style={{fontSize:13}}/>
+                      </div>
+                    </td>
+                    <td style={{padding:"4px 6px",borderLeft:"1px solid #f3f4f6",textAlign:"center"}}>
+                      <select value={item.status} onChange={e=>dispatch({type:"UPD_ITEM",sid:sec.id,iid:item.id,k:"status",v:e.target.value})}
+                        style={{width:"100%",background:"#f9fafb",border:"1px solid #e5e7eb",borderRadius:6,padding:"4px 2px",fontWeight:700,fontSize:11,outline:"none",cursor:"pointer",textAlign:"center"}}>
+                        <option value="">-</option>
+                        <option value="سليم">✅ سليم</option>
+                        <option value="صيانة">⚠️ صيانة</option>
+                        <option value="تالف">❌ تالف</option>
+                      </select>
+                    </td>
+                    <td style={{padding:"6px 8px"}}>
+                      <SI value={item.notes} onChange={v=>dispatch({type:"UPD_ITEM",sid:sec.id,iid:item.id,k:"notes",v})} placeholder="ملاحظات..." style={{fontSize:13}}/>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <button onClick={()=>dispatch({type:"ADD_ITEM",sid:sec.id})} style={{width:"100%",padding:"10px",background:"#f0fdf4",border:"none",borderTop:"1px solid #dcfce7",cursor:"pointer",fontWeight:700,fontSize:12,color:"#15803d"}}>
+              + إضافة بند فحص
+            </button>
+          </div>
+        ))}
+
+        <button onClick={()=>dispatch({type:"ADD_SEC"})} style={{width:"100%",padding:"16px",border:"2px dashed #e5e7eb",borderRadius:12,background:"none",cursor:"pointer",fontWeight:700,color:"#9ca3af",marginBottom:20,fontSize:13}}>
+          + إضافة قسم جديد
+        </button>
+
+        {/* Materials */}
+        <div style={{marginBottom:20,border:"1px solid #e5e7eb",borderRadius:12,overflow:"hidden"}}>
+          <div style={{padding:"10px 12px",background:"#f9fafb",borderBottom:`2px solid ${THEME}`,fontWeight:700}}>
+            <SI value={state.sparePartsTitle} onChange={v=>dispatch({type:"SET",k:"sparePartsTitle",v})} style={{fontWeight:700,fontSize:14}}/>
+          </div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",tableLayout:"fixed",minWidth:300}}>
+              <thead style={{background:"#f9fafb",fontSize:11}}>
+                <tr>
+                  <th style={{padding:"6px 8px",textAlign:"right",borderLeft:"1px solid #e5e7eb",borderBottom:"1px solid #e5e7eb"}}><SI value={state.colItem} onChange={v=>dispatch({type:"SET",k:"colItem",v})} style={{fontSize:11}}/></th>
+                  <th style={{padding:"6px 8px",textAlign:"center",width:"20%",borderLeft:"1px solid #e5e7eb",borderBottom:"1px solid #e5e7eb"}}><SI value={state.colType} onChange={v=>dispatch({type:"SET",k:"colType",v})} style={{fontSize:11,textAlign:"center"}}/></th>
+                  <th style={{padding:"6px 8px",textAlign:"center",width:"12%",borderLeft:"1px solid #e5e7eb",borderBottom:"1px solid #e5e7eb"}}><SI value={state.colQty} onChange={v=>dispatch({type:"SET",k:"colQty",v})} style={{fontSize:11,textAlign:"center"}}/></th>
+                  {state.showPrices&&<>
+                    <th style={{padding:"6px 8px",textAlign:"center",width:"18%",borderLeft:"1px solid #e5e7eb",borderBottom:"1px solid #e5e7eb"}}><SI value={state.colPrice} onChange={v=>dispatch({type:"SET",k:"colPrice",v})} style={{fontSize:11,textAlign:"center"}}/></th>
+                    <th style={{padding:"6px 8px",textAlign:"center",width:"18%",borderBottom:"1px solid #e5e7eb"}}><SI value={state.colTotal} onChange={v=>dispatch({type:"SET",k:"colTotal",v})} style={{fontSize:11,textAlign:"center"}}/></th>
+                  </>}
+                  <th style={{width:28}}/>
+                </tr>
+              </thead>
+              <tbody>
+                {state.materials.map(m=>(
+                  <tr key={m.id} style={{borderTop:"1px solid #f3f4f6",fontSize:13}}>
+                    <td style={{padding:"6px 8px",borderLeft:"1px solid #f3f4f6"}}><SI value={m.name} onChange={v=>dispatch({type:"UPD_MAT",id:m.id,k:"name",v})}/></td>
+                    <td style={{padding:"6px 8px",borderLeft:"1px solid #f3f4f6",textAlign:"center"}}><SI value={m.type} onChange={v=>dispatch({type:"UPD_MAT",id:m.id,k:"type",v})} style={{fontSize:12,textAlign:"center"}}/></td>
+                    <td style={{padding:"6px 8px",borderLeft:"1px solid #f3f4f6",textAlign:"center",fontWeight:700}}><SI type="number" value={m.qty} onChange={v=>dispatch({type:"UPD_MAT",id:m.id,k:"qty",v})} style={{textAlign:"center"}}/></td>
+                    {state.showPrices&&<>
+                      <td style={{padding:"6px 8px",borderLeft:"1px solid #f3f4f6",textAlign:"center"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:2,justifyContent:"center"}}>
+                          <SI type="number" value={m.price} onChange={v=>dispatch({type:"UPD_MAT",id:m.id,k:"price",v})} style={{textAlign:"center"}}/>
+                          <span style={{fontSize:10,color:"#9ca3af",flexShrink:0}}>{state.currency}</span>
+                        </div>
+                      </td>
+                      <td style={{padding:"6px 8px",textAlign:"center",fontWeight:700,color:THEME}}>
+                        {(parseFloat(m.qty||0)*parseFloat(m.price||0)).toLocaleString()} <span style={{fontSize:10}}>{state.currency}</span>
+                      </td>
+                    </>}
+                    <td style={{textAlign:"center",padding:4}}>
+                      <button onClick={()=>dispatch({type:"DEL_MAT",id:m.id})} style={{background:"none",border:"none",cursor:"pointer",color:"#d1d5db",fontSize:16}}>⊖</button>
+                    </td>
+                  </tr>
+                ))}
+                {state.showPrices&&(
+                  <tr style={{borderTop:"2px solid #e5e7eb",background:"#fff7ed"}}>
+                    <td colSpan={4} style={{padding:"8px 10px",fontWeight:700,color:THEME,fontSize:13}}>
+                      <SI value={state.lblGrandTotal} onChange={v=>dispatch({type:"SET",k:"lblGrandTotal",v})} style={{fontWeight:700,color:THEME}}/>
+                    </td>
+                    <td style={{padding:"8px",textAlign:"center",fontWeight:900,fontSize:15,color:THEME}}>
+                      {grandTotal.toLocaleString()} <span style={{fontSize:11}}>{state.currency}</span>
+                    </td>
+                    <td/>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <button onClick={()=>dispatch({type:"ADD_MAT"})} style={{width:"100%",padding:"10px",background:"#f0fdf4",border:"none",borderTop:"1px solid #dcfce7",cursor:"pointer",fontWeight:700,fontSize:12,color:"#15803d"}}>
+            + إضافة قطعة غيار
+          </button>
+        </div>
+
+        {/* Assessment */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:20}}>
+          {[["assessmentTitle","generalAssessment"],["recommendationsTitle","recommendations"]].map(([tF,dF])=>(
+            <div key={tF} style={{border:"1px solid #e5e7eb",borderRadius:12,overflow:"hidden"}}>
+              <div style={{padding:"8px 12px",background:"#f9fafb",borderBottom:"1px solid #e5e7eb"}}>
+                <SI value={state[tF]} onChange={v=>dispatch({type:"SET",k:tF,v})} style={{fontWeight:700,fontSize:13}}/>
+              </div>
+              <textarea value={state[dF]} onChange={e=>dispatch({type:"SET",k:dF,v:e.target.value})}
+                style={{width:"100%",padding:12,height:110,border:"none",outline:"none",resize:"none",fontSize:13,color:TC,background:"transparent",fontFamily:"Tajawal,sans-serif"}} placeholder="..."/>
+            </div>
+          ))}
+        </div>
+
+        {/* Photos */}
+        <div style={{borderTop:`2px solid ${THEME}`,paddingTop:20,marginBottom:20}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
+            <SI value={state.visualsTitle} onChange={v=>dispatch({type:"SET",k:"visualsTitle",v})} style={{fontWeight:900,fontSize:18}}/>
+            <label style={{padding:"10px 16px",background:THEME,color:"white",borderRadius:50,cursor:"pointer",fontWeight:700,fontSize:12,flexShrink:0}}>
+              📷 صور المعاينة <input type="file" multiple style={{display:"none"}} onChange={handlePhotos} accept="image/*"/>
+            </label>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+            {state.photos.map(p=>(
+              <div key={p.id} style={{border:"1px solid #f3f4f6",borderRadius:12,padding:6,position:"relative",background:"white"}}>
+                <button onClick={()=>dispatch({type:"DEL_PIC",id:p.id})}
+                  style={{position:"absolute",top:-8,left:-8,background:"#dc2626",color:"white",border:"none",borderRadius:"50%",width:22,height:22,cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+                <div style={{aspectRatio:"1",overflow:"hidden",borderRadius:8,marginBottom:6}}>
+                  <img src={p.url} style={{width:"100%",height:"100%",objectFit:"cover"}} alt=""/>
+                </div>
+                <input value={p.desc} onChange={e=>dispatch({type:"SET",k:"photos",v:state.photos.map(x=>x.id===p.id?{...x,desc:e.target.value}:x)})}
+                  style={{width:"100%",fontSize:11,textAlign:"center",background:"#f9fafb",border:"none",borderRadius:6,padding:"4px",outline:"none"}} placeholder="وصف..."/>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Disclaimer */}
+        <div style={{borderTop:"1px solid #e5e7eb",paddingTop:12,textAlign:"center"}}>
+          <textarea value={state.disclaimer} onChange={e=>dispatch({type:"SET",k:"disclaimer",v:e.target.value})}
+            style={{width:"100%",textAlign:"center",fontSize:11,height:50,border:"none",outline:"none",background:"transparent",opacity:.4,resize:"none",fontFamily:"Tajawal,sans-serif"}}/>
+        </div>
+      </div>
+
+      {/* Alert */}
+      {alert.show&&(
+        <div className="fade-up" style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16}}>
+          <div style={{background:"white",borderRadius:20,padding:24,maxWidth:340,width:"100%",textAlign:"center",borderTop:`4px solid ${THEME}`}}>
+            <div style={{fontSize:40,marginBottom:12}}>{alert.type==="info"?"✅":"⚠️"}</div>
+            <div style={{fontWeight:700,fontSize:15,marginBottom:20,whiteSpace:"pre-line",color:TC}}>{alert.msg}</div>
+            <div style={{display:"flex",justifyContent:"center",gap:10}}>
+              {alert.type==="confirm"&&<button onClick={()=>{alert.cb();closeAlert();}} style={{padding:"10px 24px",background:THEME,color:"white",border:"none",borderRadius:10,fontWeight:700,cursor:"pointer"}}>نعم</button>}
+              <button onClick={closeAlert} style={{padding:"10px 24px",background:"#f3f4f6",border:"none",borderRadius:10,fontWeight:700,cursor:"pointer"}}>{alert.type==="confirm"?"إلغاء":"حسناً"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
